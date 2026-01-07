@@ -8,10 +8,11 @@ import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 from loguru import logger
 
 # 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.llm.client import get_llm_client
 from backend.tools.anspire_search import AnspireSearch
@@ -26,10 +27,11 @@ app = FastAPI(title="竞品分析API", debug=True)
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8888"],
+    allow_origins=["*"],  # 允许所有源，用于开发
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",  # 允许localhost和127.0.0.1的所有端口
 )
 
 # 加载环境变量
@@ -48,7 +50,8 @@ competitor_agent = CompetitorAnalysisAgent(anspire_search)
 
 # 请求模型
 class AnalysisRequest(BaseModel):
-    domain: str  # 分析领域
+    domain: Optional[str] = None  # 领域（可选）
+    features: Optional[str] = None  # 功能描述（可选）
     product_name: str  # 产品名称
 
 # 响应模型
@@ -57,9 +60,10 @@ class Competitor(BaseModel):
     features: list[str]  # 核心功能
 
 class AnalysisResponse(BaseModel):
-    domain: str
+    domain: Optional[str]
+    features: Optional[str]
     product_name: str
-    query: str
+    queries: list[str]  # 查询列表
     competitors: list[Competitor]
     total_count: int
     message: str
@@ -68,31 +72,47 @@ class AnalysisResponse(BaseModel):
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest):
     """
-    执行竞品分析
+    执行竞品分析（领域和功能同时并行搜索）
     """
     try:
-        logger.info(f"收到分析请求：领域={request.domain}, 产品={request.product_name}")
-        
+        logger.info(f"收到分析请求：领域={request.domain}, 功能={request.features}, 产品={request.product_name}")
+
+        # 验证至少有一个输入
+        if not request.domain and not request.features:
+            raise HTTPException(status_code=400, detail="请至少输入领域或功能")
+
         # 初始化LLM客户端
         llm_client = get_llm_client(LLM_API_KEY, LLM_BASE_URL)
-        
+
         # 执行竞品分析
         result = competitor_agent.run(
             domain=request.domain,
+            features=request.features,
             product_name=request.product_name,
             llm_client=llm_client,
             model=LLM_MODEL,
             max_results=5
         )
-        
+
+        # 生成消息
+        parts = []
+        if request.domain:
+            parts.append(f"领域 '{request.domain}'")
+        if request.features:
+            parts.append(f"功能描述")
+        message = f"成功分析 {' 和 '.join(parts)}，共 {len(result['queries'])} 个查询，发现 {result['total_count']} 个竞品"
+
         return AnalysisResponse(
             domain=result["domain"],
+            features=result["features"],
             product_name=result["product_name"],
-            query=result["query"],
+            queries=result["queries"],
             competitors=result["competitors"],
             total_count=result["total_count"],
-            message=f"成功分析 {request.domain} 领域，发现 {result['total_count']} 个竞品"
+            message=message
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"分析失败：{e}")
         raise HTTPException(status_code=500, detail=str(e))

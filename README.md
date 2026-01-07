@@ -28,7 +28,7 @@ prototype/
 │   │   ├── App.tsx
 │   │   └── styles/
 │   └── package.json
-├── .env.example          # Environment variables example
+├── env-example.txt       # Environment variables example
 └── README.md
 ```
 
@@ -47,7 +47,7 @@ cd prototype
 pip install -r backend/requirements.txt
 
 # Create .env file
-cp .env.example .env
+cp env-example.txt .env
 # Edit .env and fill in your API keys
 
 # Start backend server
@@ -63,6 +63,13 @@ npm run dev
 ```
 
 Open browser and visit: `http://localhost:8888`
+
+## Important Notes
+
+- Backend runs on port 8001 (not 8000) to avoid conflicts
+- Frontend runs on port 8888
+- API requests are automatically forwarded from frontend (port 8888) to backend (port 8001)
+- Make sure to update the API endpoint in frontend if ports are changed
 
 ## Environment Variables
 

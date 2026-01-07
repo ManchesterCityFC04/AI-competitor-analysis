@@ -1,0 +1,7 @@
+# Anspire Search API
+ANSPIRE_API_KEY=your_anspire_api_key
+
+# LLM Configuration
+LLM_API_KEY=your_llm_api_key
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4
