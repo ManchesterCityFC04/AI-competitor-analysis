@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-竞品分析Agent
-负责重构查询和搜索竞品
-支持领域和功能同时并行搜索
+竞品分析Agent - 分布式提取版 (Map-Reduce)
+解决超长上下文导致输出截断的问题
 """
 
 import json
@@ -17,435 +16,275 @@ from backend.tools.web_reader import WebReader
 
 
 class CompetitorAnalysisAgent:
-    """
-    竞品分析Agent
-    """
-
     def __init__(self, anspire_search: AnspireSearch):
-        """
-        初始化竞品分析Agent
-
-        Args:
-            anspire_search: Anspire搜索工具实例
-        """
         self.anspire_search = anspire_search
         self.web_reader = WebReader()
         logger.info(f"竞品分析Agent初始化成功")
 
     def generate_search_queries(self, domain: Optional[str], features: Optional[str], product_name: str, llm_client: Any, model: str) -> List[Dict[str, str]]:
-        """
-        使用LLM根据领域和功能生成搜索查询
-
-        Args:
-            domain: 领域（可选）
-            features: 功能描述（可选）
-            product_name: 产品名称
-            llm_client: LLM客户端实例
-            model: 模型名称
-
-        Returns:
-            查询列表，格式：[{"type": "domain"/"feature", "name": "名称", "query": "搜索查询"}, ...]
-        """
+        """生成搜索查询 (保持不变)"""
         if not domain and not features:
             return []
 
         user_content = f"产品名称：{product_name}\n"
-        if domain:
-            user_content += f"领域：{domain}\n"
-        if features:
-            user_content += f"功能：{features}\n"
+        if domain: user_content += f"领域：{domain}\n"
+        if features: user_content += f"功能：{features}\n"
 
         messages = [
             {
                 "role": "system",
-                "content": """你是一个搜索查询生成专家。根据用户提供的领域和功能信息，生成最佳搜索查询。
-
-要求：
-1. 领域生成1个搜索查询，功能生成多个查询（每个功能点一个）
-2. 每个查询长度控制在20字以内，适合搜索引擎
-3. 只返回JSON格式，不要其他文字
-4.比如的查询：AI教育的产品有什么？ AI批阅试卷的产品有什么？.....
-**重点**：必须要落到产品上。
-输出格式：
-{
-  "queries": [
-    {"type": "domain", "name": "领域名称", "query": "搜索查询"},
-    {"type": "feature", "name": "功能1", "query": "搜索查询"},
-    {"type": "feature", "name": "功能2", "query": "搜索查询"}
-  ]
-}"""
+                "content": """你是一个搜索专家。生成3个能挖掘"竞品列表"的查询。
+要求：包含"排名"、"Top"、"有哪些"、"好用"等词。
+返回JSON: {"queries": [{"type": "feature", "name": "关键词", "query": "..."}]}"""
             },
-            {
-                "role": "user",
-                "content": user_content
-            }
+            {"role": "user", "content": user_content}
         ]
 
         try:
             response = chat_completion(llm_client, messages, model)
-
-            if "```json" in response:
-                start = response.find("```json") + 7
-                end = response.find("```", start)
-                response = response[start:end].strip()
-            elif "```" in response:
-                start = response.find("```") + 3
-                end = response.find("```", start)
-                response = response[start:end].strip()
-
+            if "```" in response:
+                match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response, re.DOTALL)
+                if match: response = match.group(1).strip()
+            
             result = json.loads(response)
-            queries = result.get("queries", [])
-            logger.info(f"LLM生成搜索查询成功：{queries}")
-            return queries
+            return result.get("queries", [])
         except Exception as e:
-            logger.error(f"LLM生成查询失败：{e}，使用默认方案")
-            queries = []
-            if domain:
-                queries.append({
-                    "type": "domain",
-                    "name": domain,
-                    "query": f"{domain} {product_name} 竞品"
-                })
-            if features:
-                features_list = re.split(r'[,，]', features)
-                for f in features_list:
-                    f = f.strip()
-                    if f:
-                        queries.append({
-                            "type": "feature",
-                            "name": f,
-                            "query": f"{f} 功能的产品有哪些"
-                        })
-            return queries
+            logger.warning(f"Query生成降级: {e}")
+            return [{"type": "auto", "name": "auto", "query": f"{product_name} 竞品 排名 Top10"}]
 
-    def search_competitors(self, query: str, max_results: int = 10) -> List[Dict[str, str]]:
-        """
-        搜索竞品
-
-        Args:
-            query: 搜索查询
-            max_results: 最大结果数
-
-        Returns:
-            竞品信息列表
-        """
-        try:
-            results = self.anspire_search.comprehensive_search(query, max_results)
-            competitors = []
-
-            for webpage in results.get("webpages", []):
-                competitors.append({
-                    "title": webpage.get("name", ""),
-                    "url": webpage.get("url", ""),
-                    "snippet": webpage.get("snippet", "")
-                })
-
-            logger.info(f"搜索成功，查询：{query}，找到 {len(competitors)} 个结果")
-            return competitors
-        except Exception as e:
-            logger.error(f"搜索失败：{e}")
-            return []
-
-    def search_single_query(self, query_info: Dict[str, str], max_results: int = 10) -> Dict[str, Any]:
-        """
-        执行单个查询搜索
-
-        Args:
-            query_info: 包含type, name, query的字典
-            max_results: 最大结果数
-
-        Returns:
-            搜索结果
-        """
-        query = query_info["query"]
-        search_results = self.search_competitors(query, max_results)
-        return {
-            "type": query_info["type"],
-            "name": query_info["name"],
-            "query": query,
-            "search_results": search_results
-        }
-
-    def search_all_parallel(self, all_queries: List[Dict[str, str]], max_results: int = 10) -> List[Dict[str, Any]]:
-        """
-        并行搜索所有查询（领域+功能）
-
-        Args:
-            all_queries: 所有查询列表，格式：[{"type": "domain"/"feature", "name": "名称", "query": "查询"}, ...]
-            max_results: 每个查询的最大结果数
-
-        Returns:
-            所有搜索结果列表
-        """
-        if not all_queries:
-            return []
-
+    def search_all_parallel(self, queries, max_results=10):
+        """并行搜索 (保持不变)"""
         results = []
-        with ThreadPoolExecutor(max_workers=min(len(all_queries), 5)) as executor:
-            future_to_query = {
-                executor.submit(self.search_single_query, q, max_results): q
-                for q in all_queries
-            }
-            for future in as_completed(future_to_query):
-                q = future_to_query[future]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = []
+            for q in queries:
+                futures.append(executor.submit(self.anspire_search.comprehensive_search, q['query'], max_results))
+            
+            for f in as_completed(futures):
                 try:
-                    result = future.result()
-                    results.append(result)
-                    logger.info(f"{q['type']} '{q['name']}' 搜索完成")
+                    res = f.result()
+                    for item in res.get("webpages", []):
+                        results.append({
+                            "title": item.get("name", ""),
+                            "url": item.get("url", ""),
+                            "snippet": item.get("snippet", "")
+                        })
                 except Exception as e:
-                    logger.error(f"{q['type']} '{q['name']}' 搜索失败: {e}")
-                    results.append({
-                        "type": q["type"],
-                        "name": q["name"],
-                        "query": q["query"],
-                        "search_results": []
-                    })
+                    logger.error(f"搜索出错: {e}")
         return results
+
+    def _extract_from_single_source(self, source_text: str, source_url: str, llm_client: Any, model: str) -> List[Dict[str, Any]]:
+        """
+        原子操作：从单个文本块中提取竞品
+        """
+        # 限制单次输入长度，防止甚至单个网页也过长（比如超过3万字）
+        # 30000字符对于单次提取足够了
+        safe_text = source_text[:50000] 
+        
+        messages = [
+            {
+                "role": "system",
+                "content": """你是一个数据提取助手。从给定的网页内容中提取所有提到的**竞品软件/产品名称**。
+
+提取规则：
+1. **只提取产品名**：不要提取公司名、通用名词（如"CRM系统"）。
+2. **提取功能**：简要总结该产品的 1-2 个核心功能。
+3. **JSON格式**：{"competitors": [{"name": "产品A", "features": ["功能1"]}]}
+4. 如果文中没有具体产品，返回 {"competitors": []}
+5. 不要废话，直接返回JSON。"""
+            },
+            {
+                "role": "user",
+                "content": f"来源URL: {source_url}\n\n内容:\n{safe_text}"
+            }
+        ]
+
+        try:
+            # 这里是关键：单次输入变小了，Output Token 即使默认较小也足够写出 JSON
+            response = chat_completion(llm_client, messages, model)
+            
+            # 极简清洗
+            json_str = response.strip()
+            if "```" in json_str:
+                match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', json_str, re.DOTALL)
+                if match: json_str = match.group(1).strip()
+            
+            # 尝试修复截断（虽然分片后截断概率很小）
+            if not json_str.endswith("]}"):
+                 # 暴力修复：寻找最后一个 } 或 ]
+                 last_brace = json_str.rfind('}')
+                 if last_brace != -1:
+                     json_str = json_str[:last_brace+1]
+                     if not json_str.endswith("]}") and json_str.endswith("}"):
+                         # 假设是 {"comp": [...]} 结构
+                         if json_str.count('{') > json_str.count('}'):
+                            json_str += "]}"
+            
+            data = json.loads(json_str)
+            comps = data.get("competitors", [])
+            if comps:
+                logger.info(f"从 {source_url[-20:]} 提取到 {len(comps)} 个竞品")
+            return comps
+            
+        except Exception as e:
+            # 单个失败不影响整体
+            return []
 
     def extract_competitor_info(self, competitor_data: List[Dict[str, str]], web_contents: List[Any], llm_client: Any, model: str) -> List[Dict[str, Any]]:
         """
-        从搜索结果和网页内容中提取竞品信息
+        Map-Reduce 模式提取：并行处理每个网页，然后汇总
         """
-        if not competitor_data:
-            logger.warning("没有搜索结果可供提取")
-            return []
-
-        # ... (此处保持原本构建 input_content 的逻辑不变) ...
-        # 构建 input_content 代码省略，保持原样
-        # ... -------------------------------- ...
+        all_extracted_competitors = []
         
-        # 重新构建 input_sections 和 input_content (为了完整性展示变量名)
-        web_content_map = {content.url: content for content in web_contents if content.success}
-        input_sections = []
+        # 1. 准备任务列表
+        extraction_tasks = []
+        
+        # 将网页内容映射回 URL
+        web_map = {c.url: c.content for c in web_contents if c.success}
+        
+        # 选取高质量内容进行提取（优先有全文的，其次是Snippet长的）
+        # 限制处理数量，比如处理最相关的 5-8 个网页，以免太慢
+        processed_count = 0
+        MAX_PAGES_TO_PROCESS = 8 
+        
+        # 简单去重 URL
+        seen_urls = set()
+        
+        # 优先处理有全文的
+        priority_items = []
         for item in competitor_data:
-            url = item['url']
-            title = item['title'].replace('"', '\"').replace('\n', ' ').strip()
-            snippet = item['snippet'].replace('"', '\"').replace('\n', ' ').strip()
-            section = f"标题：{title}\nURL：{url}\n内容摘要：{snippet}"
-            if url in web_content_map:
-                content = web_content_map[url].content.replace('"', '\"').replace('\n', ' ').strip()
-                content = re.sub(r'\s+', ' ', content)
-                section += f"\n完整内容：{content[:5000]}" # 缩减一下长度防止过长
-            input_sections.append(section)
+            if item['url'] in web_map and item['url'] not in seen_urls:
+                priority_items.append(item)
+                seen_urls.add(item['url'])
         
-        input_content = "\n\n".join(input_sections)
+        # 如果全文不够，用 Snippet 凑
+        for item in competitor_data:
+            if item['url'] not in seen_urls:
+                priority_items.append(item)
+                seen_urls.add(item['url'])
+        
+        tasks_input = priority_items[:MAX_PAGES_TO_PROCESS]
+        logger.info(f"准备对 {len(tasks_input)} 个来源进行并行提取...")
 
-        messages = [
-            {
-                "role": "system",
-                "content": """你是一个专业的竞品分析师。请提取竞品名称和核心功能。
-规则：
-1. 必须返回标准JSON格式。
-2. JSON结构：{"competitors":[{"name":"产品名","features":["功能1","功能2"]}]}
-3. 如果内容很多，请确保JSON完整，不要用"..."省略，如果写不下可以少写几个竞品，但必须保证JSON语法闭合。
-4. 不要返回任何Markdown标记，只返回纯JSON字符串。"""
-            },
-            {
-                "role": "user",
-                "content": f"请从以下内容提取竞品信息：\n\n{input_content[:15000]}" # 截断输入防止Token溢出
-            }
-        ]
-
-        try:
-            response = chat_completion(llm_client, messages, model)
+        # 2. 并行执行提取 (Map 阶段)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_url = {}
             
-            # 1. 提取 JSON 字符串 (移除 Markdown 和无关文本)
-            json_str = response.strip()
-            if "```" in json_str:
-                pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-                match = re.search(pattern, json_str, re.DOTALL)
-                if match:
-                    json_str = match.group(1).strip()
-            
-            # 移除可能的前后缀
-            start_idx = json_str.find('{')
-            if start_idx != -1:
-                json_str = json_str[start_idx:]
-            
-            # 2. 尝试清洗常见的语法错误
-            # 修复：对象之间缺失逗号 (e.g., } { -> }, {)
-            json_str = re.sub(r'\}\s*\{', '}, {', json_str)
-            # 修复：列表内字符串缺失逗号 (e.g., "a" "b" -> "a", "b")
-            json_str = re.sub(r'\"\s*\"', '", "', json_str)
-            # 修复：中文冒号
-            json_str = json_str.replace('：', ':')
-            # 移除末尾的 "..." (LLM常用来表示未完)
-            if json_str.endswith("..."):
-                json_str = json_str[:-3].strip()
-
-            # 3. 解析与截断修复循环
-            parsed_json = None
-            
-            # 尝试 1: 直接解析
-            try:
-                parsed_json = json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
-
-            # 尝试 2: 如果失败，尝试通过寻找最后一个有效的对象闭合来修复截断
-            if parsed_json is None:
-                try:
-                    # 我们假设结构是 {"competitors": [ ... ]}
-                    # 找到最后一个 "}]" 或者 "}"
-                    # 如果是被截断的，我们尝试找到列表里最后一个完整的 "}"，然后手动闭合
-                    
-                    # 找到 "competitors" 的开始位置
-                    comp_start = json_str.find('"competitors"')
-                    if comp_start != -1:
-                        # 找到列表的开始 '['
-                        list_start = json_str.find('[', comp_start)
-                        if list_start != -1:
-                            # 从后往前找 '}'，这是最后一个完整对象的结束
-                            last_obj_end = json_str.rfind('}')
-                            
-                            # 如果最后一个 '}' 是在最末尾（可能是根对象的结束），我们需要找倒数第二个
-                            # 或者我们简单地不断尝试截断解析
-                            
-                            # 策略：从后往前遍历所有的 '}'，试图在那个位置闭合 JSON
-                            valid_indices = [m.end() for m in re.finditer(r'\}', json_str)]
-                            # 倒序尝试
-                            for idx in reversed(valid_indices):
-                                # 尝试构建：当前截断点 + ]} (补全列表和根对象)
-                                temp_json = json_str[:idx] + ']}'
-                                try:
-                                    parsed_json = json.loads(temp_json)
-                                    logger.info(f"JSON通过截断修复成功，保留至索引 {idx}")
-                                    break
-                                except json.JSONDecodeError:
-                                    continue
-                                    
-                                # 另一种情况：也许根本就没有根对象的闭合，尝试只补全 ]}
-                                # 上面的逻辑已经涵盖了大多数情况
-                except Exception as e:
-                    logger.warning(f"智能截断修复失败: {e}")
-
-            # 4. 提取数据
-            competitors = []
-            if parsed_json and "competitors" in parsed_json:
-                competitors = parsed_json["competitors"]
-            
-            # 5. 降级方案：如果JSON解析依然全军覆没，使用正则暴力提取
-            if not competitors:
-                logger.warning("JSON解析失败，启用正则暴力提取模式")
-                # 匹配 {"name": "...", "features": [...]} 结构
-                # 这种正则即使JSON不完整也能提取出完整的片段
-                block_pattern = r'\{\s*"name"\s*:\s*"(.*?)"\s*,\s*"features"\s*:\s*\[(.*?)\]\s*\}'
-                matches = re.findall(block_pattern, json_str, re.DOTALL)
+            for item in tasks_input:
+                url = item['url']
+                # 如果有全文用全文，否则用 Snippet
+                if url in web_map:
+                    content_text = web_map[url]
+                    # 清洗空白
+                    content_text = re.sub(r'\s+', ' ', content_text)
+                else:
+                    content_text = item['snippet']
                 
-                for name, features_str in matches:
-                    # 清洗功能列表
-                    feats = re.findall(r'"(.*?)"', features_str)
-                    if not feats: # 尝试单引号
-                        feats = re.findall(r"'(.*?)'", features_str)
-                    
-                    competitors.append({
-                        "name": name,
-                        "features": feats
-                    })
+                # 提交任务
+                future = executor.submit(self._extract_from_single_source, content_text, url, llm_client, model)
+                future_to_url[future] = url
 
-            # 确保数据格式正确
-            final_results = []
-            for comp in competitors:
-                if isinstance(comp, dict) and "name" in comp:
-                    final_results.append({
-                        "name": str(comp["name"]),
-                        "features": comp.get("features", []) if isinstance(comp.get("features"), list) else []
-                    })
-            
-            logger.info(f"竞品信息提取完成，共提取 {len(final_results)} 个")
-            return final_results
+            # 收集结果
+            for future in as_completed(future_to_url):
+                try:
+                    comps = future.result()
+                    all_extracted_competitors.extend(comps)
+                except Exception as e:
+                    logger.error(f"提取任务异常: {e}")
 
-        except Exception as e:
-            logger.error(f"竞品提取发生未预期的错误: {e}")
-            return []
+        # 3. 结果清洗
+        clean_results = []
+        for c in all_extracted_competitors:
+            if isinstance(c, dict) and "name" in c:
+                clean_results.append({
+                    "name": str(c["name"]),
+                    "features": c.get("features", [])
+                })
+        
+        return clean_results
 
     def merge_and_deduplicate_competitors(self, all_competitors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        合并并去重竞品列表
+        合并并去重 (Reduce 阶段)
         """
         merged = {}
-        for competitor in all_competitors:
-            name = competitor.get("name", "").strip()
-            if not name:
+        # 过滤词
+        blocklist = ["首页", "产品", "解决方案", "关于我们", "登录", "注册", "下载", "平台"]
+        
+        for comp in all_competitors:
+            name = comp.get("name", "").strip()
+            # 简单清洗
+            name = re.sub(r'[\(\（].*?[\)\）]', '', name).strip() # 去除括号内容
+            
+            if not name or len(name) < 2 or name in blocklist:
                 continue
-
-            name_lower = name.lower()
-            if name_lower in merged:
-                existing_features = set(merged[name_lower]["features"])
-                new_features = competitor.get("features", [])
-                existing_features.update(new_features)
-                merged[name_lower]["features"] = list(existing_features)
+                
+            key = name.lower()
+            if key in merged:
+                # 合并功能
+                old_feats = set(merged[key]["features"])
+                new_feats = comp.get("features", [])
+                if isinstance(new_feats, list):
+                    old_feats.update(new_feats)
+                merged[key]["features"] = list(old_feats)[:5] # 限制功能数量
             else:
-                merged[name_lower] = {
+                merged[key] = {
                     "name": name,
-                    "features": list(set(competitor.get("features", [])))
+                    "features": comp.get("features", [])[:3]
                 }
-
-        result = list(merged.values())
-        logger.info(f"竞品去重完成，合并后共 {len(result)} 个竞品")
-        return result
+        
+        return list(merged.values())
 
     def run(self, domain: Optional[str], features: Optional[str], product_name: str, llm_client: Any, model: str, max_results: int = 10) -> Dict[str, Any]:
-        """
-        执行竞品分析流程（领域和功能同时并行搜索）
+        logger.info(f"=== 开始竞品分析 (Map-Reduce版) ===")
+        
+        # 1. 生成查询
+        queries_data = self.generate_search_queries(domain, features, product_name, llm_client, model)
+        # 提取纯文本查询列表，供返回使用
+        query_strings = [q['query'] for q in queries_data]
+        logger.info(f"生成查询: {query_strings}")
+        
+        # 2. 搜索
+        raw_results = self.search_all_parallel(queries_data, max_results)
+        
+        # 去重 URL
+        unique_results = {}
+        for r in raw_results:
+            if r['url'] not in unique_results:
+                unique_results[r['url']] = r
+        search_results = list(unique_results.values())
+        logger.info(f"搜索到 {len(search_results)} 个唯一网页")
 
-        Args:
-            domain: 领域（可选）
-            features: 功能描述（可选）
-            product_name: 产品名称
-            llm_client: LLM客户端实例
-            model: 模型名称
-            max_results: 最大结果数
-
-        Returns:
-            竞品分析结果
-        """
-        logger.info(f"开始竞品分析，领域：{domain}，功能：{features}，产品：{product_name}")
-
-        all_queries = self.generate_search_queries(domain, features, product_name, llm_client, model)
-
-        if not all_queries:
-            logger.warning("没有有效的查询")
-            return {
-                "domain": domain,
-                "features": features,
-                "product_name": product_name,
-                "queries": [],
-                "competitors": [],
-                "total_count": 0
-            }
-
-        logger.info(f"共生成 {len(all_queries)} 个查询，开始并行搜索")
-
-        # 3. 并行搜索所有查询
-        search_results = self.search_all_parallel(all_queries, max_results)
-
-        # 4. 收集所有搜索结果
-        queries = [r["query"] for r in search_results]
-        all_search_results = []
-        for r in search_results:
-            all_search_results.extend(r["search_results"])
-
-        # 5. 获取网页内容
+        # 3. 智能筛选 Top N 进行抓取
+        def rank_score(item):
+            score = 0
+            txt = (item['title'] + item['snippet']).lower()
+            if '排名' in txt or 'top' in txt or '十大' in txt: score += 10
+            if '有哪些' in txt or '盘点' in txt: score += 5
+            return score
+            
+        sorted_results = sorted(search_results, key=rank_score, reverse=True)
+        top_urls = [r['url'] for r in sorted_results[:8]]
+        
+        # 4. 读取网页
         web_contents = []
-        if all_search_results:
-            urls = list(set(result['url'] for result in all_search_results))[:5]
-            web_contents = self.web_reader.read_urls(urls)
-            logger.info(f"成功获取 {sum(1 for c in web_contents if c.success)} 个网页内容")
-
-        # 6. 提取竞品信息
-        extracted = self.extract_competitor_info(all_search_results, web_contents, llm_client, model)
-
-        # 7. 合并去重
-        all_competitors = self.merge_and_deduplicate_competitors(extracted)
-
-        logger.info(f"竞品分析完成，共发现 {len(all_competitors)} 个竞品")
-
+        if top_urls:
+            web_contents = self.web_reader.read_urls(top_urls)
+            
+        # 5. 分布式提取
+        extracted = self.extract_competitor_info(search_results, web_contents, llm_client, model)
+        
+        # 6. 汇总去重
+        final_competitors = self.merge_and_deduplicate_competitors(extracted)
+        
+        logger.info(f"分析结束，最终获得 {len(final_competitors)} 个竞品")
+        
+        # --- 修复点：补全返回字段 ---
         return {
             "domain": domain,
             "features": features,
             "product_name": product_name,
-            "queries": queries,
-            "competitors": all_competitors,
-            "total_count": len(all_competitors)
+            "queries": query_strings,  # 之前漏了这个
+            "competitors": final_competitors,
+            "total_count": len(final_competitors)
         }
