@@ -8,6 +8,7 @@ Jina Reader 是免费服务，无需 API Key。
 import requests
 from typing import Optional, Dict, Any, List, Callable, Generator
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 
 
@@ -103,20 +104,38 @@ class WebReader:
         logger.info(f"--- 读取网页内容: {url[:60]}... ---")
         return self._fetch_content(url)
 
-    def read_urls(self, urls: list) -> list:
+    def read_urls(self, urls: list, max_workers: int = 8) -> list:
         """
-        批量读取多个 URL 的内容
+        并行批量读取多个 URL 的内容
 
         Args:
             urls: URL 列表
+            max_workers: 并行线程数
 
         Returns:
             List[WebContent]: 网页内容列表
         """
+        if not urls:
+            return []
+
+        logger.info(f"开始并行抓取 {len(urls)} 个网页（{max_workers} 线程）...")
+
         results = []
-        for url in urls:
-            result = self.read_url(url)
-            results.append(result)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_url = {executor.submit(self._fetch_content, url): url for url in urls}
+
+            for future in as_completed(future_to_url):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    url = future_to_url[future]
+                    logger.error(f"抓取失败: {url}, 错误: {e}")
+                    results.append(WebContent(url=url, error=str(e)))
+
+        success_count = sum(1 for r in results if r.success)
+        logger.info(f"抓取完成: {success_count}/{len(urls)} 成功")
+
         return results
 
     def read_urls_with_progress(

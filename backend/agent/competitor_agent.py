@@ -13,12 +13,14 @@ from loguru import logger
 from backend.llm.client import chat_completion
 from backend.tools.anspire_search import AnspireSearch
 from backend.tools.web_reader import WebReader
+from backend.agent.feature_extractor import FeatureExtractor
 
 
 class CompetitorAnalysisAgent:
     def __init__(self, anspire_search: AnspireSearch):
         self.anspire_search = anspire_search
         self.web_reader = WebReader()
+        self.feature_extractor = FeatureExtractor(anspire_search, self.web_reader)
         logger.info(f"竞品分析Agent初始化成功")
 
     def generate_search_queries(self, domain: Optional[str], features: Optional[str], product_name: str, llm_client: Any, model: str) -> List[Dict[str, str]]:
@@ -135,35 +137,27 @@ class CompetitorAnalysisAgent:
         Map-Reduce 模式提取：并行处理每个网页，然后汇总
         """
         all_extracted_competitors = []
-        
-        # 1. 准备任务列表
-        extraction_tasks = []
-        
+
         # 将网页内容映射回 URL
         web_map = {c.url: c.content for c in web_contents if c.success}
         
-        # 选取高质量内容进行提取（优先有全文的，其次是Snippet长的）
-        # 限制处理数量，比如处理最相关的 5-8 个网页，以免太慢
-        processed_count = 0
-        MAX_PAGES_TO_PROCESS = 8 
-        
-        # 简单去重 URL
+        # 选取高质量内容进行提取（优先有全文的，其次是Snippet）
         seen_urls = set()
-        
+
         # 优先处理有全文的
         priority_items = []
         for item in competitor_data:
             if item['url'] in web_map and item['url'] not in seen_urls:
                 priority_items.append(item)
                 seen_urls.add(item['url'])
-        
+
         # 如果全文不够，用 Snippet 凑
         for item in competitor_data:
             if item['url'] not in seen_urls:
                 priority_items.append(item)
                 seen_urls.add(item['url'])
-        
-        tasks_input = priority_items[:MAX_PAGES_TO_PROCESS]
+
+        tasks_input = priority_items
         logger.info(f"准备对 {len(tasks_input)} 个来源进行并行提取...")
 
         # 2. 并行执行提取 (Map 阶段)
@@ -226,11 +220,11 @@ class CompetitorAnalysisAgent:
                 new_feats = comp.get("features", [])
                 if isinstance(new_feats, list):
                     old_feats.update(new_feats)
-                merged[key]["features"] = list(old_feats)[:5] # 限制功能数量
+                merged[key]["features"] = list(old_feats)
             else:
                 merged[key] = {
                     "name": name,
-                    "features": comp.get("features", [])[:3]
+                    "features": comp.get("features", [])
                 }
         
         return list(merged.values())
@@ -264,7 +258,7 @@ class CompetitorAnalysisAgent:
             return score
             
         sorted_results = sorted(search_results, key=rank_score, reverse=True)
-        top_urls = [r['url'] for r in sorted_results[:8]]
+        top_urls = [r['url'] for r in sorted_results]
         
         # 4. 读取网页
         web_contents = []
@@ -276,15 +270,25 @@ class CompetitorAnalysisAgent:
         
         # 6. 汇总去重
         final_competitors = self.merge_and_deduplicate_competitors(extracted)
-        
-        logger.info(f"分析结束，最终获得 {len(final_competitors)} 个竞品")
-        
-        # --- 修复点：补全返回字段 ---
+        logger.info(f"初步分析完成，获得 {len(final_competitors)} 个竞品")
+
+        # 7. 二次深度搜索：获取竞品详细功能
+        logger.info("=== 开始二次深度搜索 ===")
+        enriched_competitors = self.feature_extractor.enrich_competitors(
+            competitors=final_competitors,
+            domain=domain or "",
+            llm_client=llm_client,
+            model=model,
+            max_workers=4
+        )
+
+        logger.info(f"分析结束，最终获得 {len(enriched_competitors)} 个竞品（含详细功能）")
+
         return {
             "domain": domain,
             "features": features,
             "product_name": product_name,
-            "queries": query_strings,  # 之前漏了这个
-            "competitors": final_competitors,
-            "total_count": len(final_competitors)
+            "queries": query_strings,
+            "competitors": enriched_competitors,
+            "total_count": len(enriched_competitors)
         }

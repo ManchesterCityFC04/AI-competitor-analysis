@@ -24,14 +24,13 @@ logger.add("backend.log", level="INFO", rotation="10 MB")
 # 创建FastAPI应用
 app = FastAPI(title="竞品分析API", debug=True)
 
-# 配置CORS
+# 配置CORS - 开发环境允许所有localhost端口
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有源，用于开发
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",  # 允许localhost和127.0.0.1的所有端口
 )
 
 # 加载环境变量
@@ -134,6 +133,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=True
     )
