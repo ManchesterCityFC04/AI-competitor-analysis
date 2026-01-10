@@ -5,11 +5,15 @@
 
 import os
 import sys
-from fastapi import FastAPI, HTTPException
+import json
+import asyncio
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from loguru import logger
+from concurrent.futures import ThreadPoolExecutor
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -55,6 +59,8 @@ class AnalysisRequest(BaseModel):
 
 # 响应模型
 class Competitor(BaseModel):
+    score: int = 5  # 相关性评分
+    reason: str = ""  # 评分理由
     name: str  # 竞品名称
     features: list[str]  # 核心功能
 
@@ -116,6 +122,135 @@ async def analyze(request: AnalysisRequest):
         logger.error(f"分析失败：{e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# 线程池用于运行同步任务
+executor = ThreadPoolExecutor(max_workers=2)
+
+# SSE流式分析端点
+@app.get("/api/analyze/stream")
+async def analyze_stream(
+    domain: Optional[str] = Query(None),
+    features: Optional[str] = Query(None),
+    product_name: str = Query(...)
+):
+    """
+    流式竞品分析，通过SSE推送进度
+    """
+    async def event_generator():
+        try:
+            # 验证输入
+            if not domain and not features:
+                yield f"data: {json.dumps({'type': 'error', 'message': '请至少输入领域或功能'})}\n\n"
+                return
+
+            logger.info(f"[SSE] 开始流式分析：领域={domain}, 功能={features}, 产品={product_name}")
+
+            # 发送初始化进度
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'init', 'progress': 5, 'detail': '正在初始化分析...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 发送查询生成进度
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'query', 'progress': 10, 'detail': '正在生成搜索查询...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 初始化LLM客户端
+            llm_client = get_llm_client(LLM_API_KEY, LLM_BASE_URL)
+
+            # 发送搜索进度
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'search', 'progress': 25, 'detail': '正在搜索竞品信息...'})}\n\n"
+
+            # 在线程池中运行同步任务
+            loop = asyncio.get_event_loop()
+
+            # 分阶段执行并发送进度
+            # 阶段1: 生成查询
+            queries_data = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.generate_search_queries(domain, features, product_name, llm_client, LLM_MODEL)
+            )
+            query_strings = [q["query"] for q in queries_data]
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'search', 'progress': 35, 'detail': f'生成了 {len(query_strings)} 个搜索查询，开始搜索...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段2: 并行搜索
+            raw_results = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.search_all_parallel(queries_data, 5)
+            )
+            search_results = list({r["url"]: r for r in raw_results}.values())
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'read', 'progress': 50, 'detail': f'搜索到 {len(search_results)} 个网页，正在读取内容...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段3: 读取网页
+            web_contents = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.web_reader.read_urls([r["url"] for r in search_results]) if search_results else []
+            )
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'extract', 'progress': 65, 'detail': '正在提取竞品数据...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段4: 提取竞品
+            extracted = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.extract_competitor_info(search_results, web_contents, domain or "", features or "", llm_client, LLM_MODEL)
+            )
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'merge', 'progress': 75, 'detail': f'提取到 {len(extracted)} 个竞品，正在合并去重...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段5: 合并去重
+            merged = competitor_agent.merge_and_deduplicate_competitors(extracted)
+            validated = competitor_agent.validate_competitors(merged, domain or "", features or "", llm_client, LLM_MODEL, min_score=6)
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'enrich', 'progress': 85, 'detail': f'筛选出 {len(validated)} 个竞品，正在深度分析...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段6: 深度分析
+            enriched = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.feature_extractor.enrich_competitors(
+                    competitors=validated,
+                    domain=domain or "",
+                    llm_client=llm_client,
+                    model=LLM_MODEL,
+                    max_workers=4
+                )
+            )
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'complete', 'progress': 100, 'detail': '分析完成！'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 构建结果
+            result = {
+                "domain": domain,
+                "features": features,
+                "product_name": product_name,
+                "queries": query_strings,
+                "competitors": enriched,
+                "total_count": len(enriched),
+                "message": f"成功分析，发现 {len(enriched)} 个竞品"
+            }
+
+            # 发送最终结果
+            yield f"data: {json.dumps({'type': 'result', 'data': result})}\n\n"
+            logger.info(f"[SSE] 分析完成，发现 {len(enriched)} 个竞品")
+
+        except Exception as e:
+            logger.error(f"[SSE] 分析失败：{e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 # 健康检查端点
 @app.get("/health")
 async def health_check():
@@ -134,5 +269,6 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8001,
-        reload=True
+        reload=True,
+        reload_dirs=[".", "../agent", "../tools", "../llm"]
     )

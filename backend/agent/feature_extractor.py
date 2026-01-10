@@ -305,7 +305,9 @@ class FeatureExtractor:
 
                     enriched.append({
                         "name": comp['name'],
-                        "features": unique_features
+                        "features": unique_features,
+                        "score": comp.get('score', 5),
+                        "reason": comp.get('reason', '')
                     })
 
                     logger.info(f"竞品 '{comp['name']}' 功能: {len(old_features)} -> {len(unique_features)}")
