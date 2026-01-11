@@ -294,7 +294,7 @@ const App: React.FC = () => {
   // 降级请求（不支持SSE时使用）
   const fallbackRequest = async () => {
     // 模拟进度
-    const stages = ['query', 'search', 'read', 'extract', 'merge', 'enrich'];
+    const stages = ['query', 'search', 'read', 'extract', 'merge', 'enrich', 'insights'];
     let currentStage = 0;
 
     const progressInterval = setInterval(() => {
@@ -302,12 +302,12 @@ const App: React.FC = () => {
         const stageInfo = PROGRESS_STAGES.find(s => s.key === stages[currentStage]);
         setProgress({
           stage: stages[currentStage],
-          progress: Math.min(15 + currentStage * 15, 90),
+          progress: Math.min(10 + currentStage * 12, 95),
           detail: stageInfo?.label || '处理中...'
         });
         currentStage++;
       }
-    }, 3000);
+    }, 2500);
 
     try {
       const response = await fetch('http://localhost:8001/api/analyze', {

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Any
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 
@@ -64,6 +64,22 @@ class Competitor(BaseModel):
     name: str  # 竞品名称
     features: list[str]  # 核心功能
 
+class SourceLink(BaseModel):
+    title: str
+    url: str
+
+class Recommendation(BaseModel):
+    title: str = ""
+    detail: str = ""
+
+class Insights(BaseModel):
+    summary: str = ""
+    market_stage: str = ""
+    must_have_features: List[str] = []
+    differentiators: List[str] = []
+    recommendations: List[Any] = []
+    risks: List[str] = []
+
 class AnalysisResponse(BaseModel):
     domain: Optional[str]
     features: Optional[str]
@@ -72,6 +88,8 @@ class AnalysisResponse(BaseModel):
     competitors: list[Competitor]
     total_count: int
     message: str
+    source_links: List[SourceLink] = []
+    insights: Optional[Insights] = None
 
 # API端点
 @app.post("/api/analyze", response_model=AnalysisResponse)
@@ -114,7 +132,9 @@ async def analyze(request: AnalysisRequest):
             queries=result["queries"],
             competitors=result["competitors"],
             total_count=result["total_count"],
-            message=message
+            message=message,
+            source_links=result.get("source_links", []),
+            insights=result.get("insights")
         )
     except HTTPException:
         raise
