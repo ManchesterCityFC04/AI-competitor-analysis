@@ -111,6 +111,105 @@ class CompetitorAnalysisAgent:
         filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
         return filtered
 
+    def generate_summary_and_recommendations(self, competitors, domain, features, product_name, llm_client, model):
+        """生成竞品总结和产品发展建议"""
+        if not competitors:
+            return {"summary": "未发现足够的竞品信息", "recommendations": []}
+
+        # 构建竞品信息摘要
+        competitor_info = "\n".join([
+            f"- {c['name']}（相关性：{c.get('score', 5)}/10）：{', '.join(c.get('features', [])[:8])}"
+            for c in competitors[:10]
+        ])
+
+        # 收集所有功能用于分析
+        all_features = []
+        for c in competitors:
+            all_features.extend(c.get('features', []))
+        feature_freq = {}
+        for f in all_features:
+            feature_freq[f] = feature_freq.get(f, 0) + 1
+        common_features = sorted(feature_freq.items(), key=lambda x: -x[1])[:15]
+        common_features_str = ", ".join([f[0] for f in common_features])
+
+        system_prompt = """你是一位资深的产品战略顾问和市场分析专家。请基于竞品分析结果，进行深度思考和战略建议。
+
+## 你的分析框架
+
+### 第一步：市场格局理解
+- 这些竞品反映了怎样的市场需求？
+- 市场处于什么发展阶段（萌芽期/成长期/成熟期/衰退期）？
+- 主要玩家的定位有何差异？
+
+### 第二步：功能维度分析
+- 哪些是"必备功能"（大多数竞品都有）？
+- 哪些是"差异化功能"（少数竞品独有）？
+- 有哪些功能空白点（用户可能需要但竞品未覆盖）？
+
+### 第三步：战略建议思考
+- 如果是新进入者，应该采取什么策略？
+- 如果要差异化竞争，切入点在哪里？
+- 有哪些创新机会？
+
+## 输出要求
+请返回JSON格式，包含：
+1. summary: 市场总结（200-300字，包含市场格局、竞争态势、关键洞察）
+2. market_stage: 市场阶段（萌芽期/成长期/成熟期/衰退期）
+3. must_have_features: 必备功能列表（用户期望的基础功能）
+4. differentiators: 差异化机会列表（可以突破的点）
+5. recommendations: 产品发展建议列表（3-5条具体可行的建议，每条包含 title 和 detail）
+6. risks: 潜在风险提醒（1-2条）
+
+请深入思考，给出有洞察力的分析，而不是泛泛而谈。"""
+
+        user_content = f"""## 分析目标
+- 用户产品名称：{product_name}
+- 目标领域：{domain or '未指定'}
+- 期望功能：{features or '未指定'}
+
+## 竞品数据
+共发现 {len(competitors)} 个竞品：
+
+{competitor_info}
+
+## 市场常见功能（按出现频率）
+{common_features_str}
+
+请基于以上信息，进行深度分析并给出战略建议。"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+
+        try:
+            response = chat_completion(llm_client, messages, model)
+            json_str = response.strip()
+            if "```" in json_str:
+                m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", json_str, re.DOTALL)
+                if m: json_str = m.group(1).strip()
+
+            result = json.loads(json_str)
+            logger.info("成功生成竞品总结和建议")
+            return {
+                "summary": result.get("summary", ""),
+                "market_stage": result.get("market_stage", ""),
+                "must_have_features": result.get("must_have_features", []),
+                "differentiators": result.get("differentiators", []),
+                "recommendations": result.get("recommendations", []),
+                "risks": result.get("risks", [])
+            }
+        except Exception as e:
+            logger.warning(f"生成总结建议失败: {e}")
+            return {
+                "summary": "分析生成失败，请重试",
+                "market_stage": "",
+                "must_have_features": [],
+                "differentiators": [],
+                "recommendations": [],
+                "risks": []
+            }
+
     def run(self, domain, features, product_name, llm_client, model, max_results=10):
         logger.info("=== 开始竞品分析 (带相关性过滤) ===")
         queries_data = self.generate_search_queries(domain, features, product_name, llm_client, model)
@@ -119,6 +218,10 @@ class CompetitorAnalysisAgent:
         raw_results = self.search_all_parallel(queries_data, max_results)
         search_results = list({r["url"]: r for r in raw_results}.values())
         logger.info(f"搜索到 {len(search_results)} 个唯一网页")
+
+        # 保存参考链接
+        source_links = [{"title": r["title"], "url": r["url"]} for r in search_results[:15]]
+
         rank_fn = lambda item: (10 if any(k in (item["title"]+item["snippet"]).lower() for k in ["排名","top","十大"]) else 0) + (5 if any(k in (item["title"]+item["snippet"]).lower() for k in ["有哪些","盘点"]) else 0)
         sorted_results = sorted(search_results, key=rank_fn, reverse=True)
         web_contents = self.web_reader.read_urls([r["url"] for r in sorted_results]) if sorted_results else []
@@ -130,4 +233,18 @@ class CompetitorAnalysisAgent:
         logger.info("=== 开始二次深度搜索 ===")
         enriched = self.feature_extractor.enrich_competitors(competitors=validated, domain=domain or "", llm_client=llm_client, model=model, max_workers=4)
         logger.info(f"分析结束，最终获得 {len(enriched)} 个竞品")
-        return {"domain": domain, "features": features, "product_name": product_name, "queries": query_strings, "competitors": enriched, "total_count": len(enriched)}
+
+        # 生成总结和建议
+        logger.info("=== 生成市场总结和产品建议 ===")
+        insights = self.generate_summary_and_recommendations(enriched, domain, features, product_name, llm_client, model)
+
+        return {
+            "domain": domain,
+            "features": features,
+            "product_name": product_name,
+            "queries": query_strings,
+            "competitors": enriched,
+            "total_count": len(enriched),
+            "source_links": source_links,
+            "insights": insights
+        }

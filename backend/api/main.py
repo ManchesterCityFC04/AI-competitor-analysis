@@ -179,7 +179,10 @@ async def analyze_stream(
             )
             search_results = list({r["url"]: r for r in raw_results}.values())
 
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'read', 'progress': 50, 'detail': f'搜索到 {len(search_results)} 个网页，正在读取内容...'})}\n\n"
+            # 保存参考链接
+            source_links = [{"title": r["title"], "url": r["url"]} for r in search_results[:15]]
+
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'read', 'progress': 45, 'detail': f'搜索到 {len(search_results)} 个网页，正在读取内容...'})}\n\n"
             await asyncio.sleep(0.1)
 
             # 阶段3: 读取网页
@@ -188,7 +191,7 @@ async def analyze_stream(
                 lambda: competitor_agent.web_reader.read_urls([r["url"] for r in search_results]) if search_results else []
             )
 
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'extract', 'progress': 65, 'detail': '正在提取竞品数据...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'extract', 'progress': 55, 'detail': '正在提取竞品数据...'})}\n\n"
             await asyncio.sleep(0.1)
 
             # 阶段4: 提取竞品
@@ -197,14 +200,14 @@ async def analyze_stream(
                 lambda: competitor_agent.extract_competitor_info(search_results, web_contents, domain or "", features or "", llm_client, LLM_MODEL)
             )
 
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'merge', 'progress': 75, 'detail': f'提取到 {len(extracted)} 个竞品，正在合并去重...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'merge', 'progress': 65, 'detail': f'提取到 {len(extracted)} 个竞品，正在合并去重...'})}\n\n"
             await asyncio.sleep(0.1)
 
             # 阶段5: 合并去重
             merged = competitor_agent.merge_and_deduplicate_competitors(extracted)
             validated = competitor_agent.validate_competitors(merged, domain or "", features or "", llm_client, LLM_MODEL, min_score=6)
 
-            yield f"data: {json.dumps({'type': 'progress', 'stage': 'enrich', 'progress': 85, 'detail': f'筛选出 {len(validated)} 个竞品，正在深度分析...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'enrich', 'progress': 75, 'detail': f'筛选出 {len(validated)} 个竞品，正在深度分析...'})}\n\n"
             await asyncio.sleep(0.1)
 
             # 阶段6: 深度分析
@@ -219,6 +222,17 @@ async def analyze_stream(
                 )
             )
 
+            yield f"data: {json.dumps({'type': 'progress', 'stage': 'insights', 'progress': 90, 'detail': '正在生成市场总结和产品建议...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 阶段7: 生成总结和建议
+            insights = await loop.run_in_executor(
+                executor,
+                lambda: competitor_agent.generate_summary_and_recommendations(
+                    enriched, domain, features, product_name, llm_client, LLM_MODEL
+                )
+            )
+
             yield f"data: {json.dumps({'type': 'progress', 'stage': 'complete', 'progress': 100, 'detail': '分析完成！'})}\n\n"
             await asyncio.sleep(0.1)
 
@@ -230,6 +244,8 @@ async def analyze_stream(
                 "queries": query_strings,
                 "competitors": enriched,
                 "total_count": len(enriched),
+                "source_links": source_links,
+                "insights": insights,
                 "message": f"成功分析，发现 {len(enriched)} 个竞品"
             }
 

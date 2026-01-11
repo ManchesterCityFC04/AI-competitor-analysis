@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Target, Zap, Sparkles, Package, List, Brain, ChevronRight, AlertCircle, CheckCircle, RotateCcw as Loader, Star, Download, FileSpreadsheet, FileText } from 'lucide-react';
+import { Search, Target, Zap, Sparkles, Package, List, Brain, ChevronRight, AlertCircle, CheckCircle, RotateCcw as Loader, Star, FileSpreadsheet, FileText, Link, Lightbulb, TrendingUp, Shield, ExternalLink } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 
@@ -12,6 +12,25 @@ interface Competitor {
   features: string[];
 }
 
+interface SourceLink {
+  title: string;
+  url: string;
+}
+
+interface Recommendation {
+  title: string;
+  detail: string;
+}
+
+interface Insights {
+  summary: string;
+  market_stage: string;
+  must_have_features: string[];
+  differentiators: string[];
+  recommendations: Recommendation[];
+  risks: string[];
+}
+
 interface AnalysisResponse {
   domain: string | null;
   features: string | null;
@@ -20,6 +39,8 @@ interface AnalysisResponse {
   competitors: Competitor[];
   total_count: number;
   message: string;
+  source_links?: SourceLink[];
+  insights?: Insights;
 }
 
 interface ProgressInfo {
@@ -45,6 +66,7 @@ const PROGRESS_STAGES = [
   { key: 'extract', label: '提取竞品数据', icon: '🤖' },
   { key: 'merge', label: '合并去重', icon: '🔄' },
   { key: 'enrich', label: '深度分析功能', icon: '✨' },
+  { key: 'insights', label: '生成总结建议', icon: '💡' },
   { key: 'complete', label: '分析完成', icon: '✅' },
 ];
 
@@ -243,7 +265,9 @@ const App: React.FC = () => {
                   .sort((a: Competitor, b: Competitor) => b.score - a.score)
               : [],
             total_count: data.data.total_count ?? 0,
-            message: data.data.message ?? ''
+            message: data.data.message ?? '',
+            source_links: Array.isArray(data.data.source_links) ? data.data.source_links : [],
+            insights: data.data.insights ?? undefined
           };
           setResult(validatedData);
           setProgress({ stage: 'complete', progress: 100, detail: '分析完成！' });
@@ -320,7 +344,9 @@ const App: React.FC = () => {
               .sort((a: Competitor, b: Competitor) => b.score - a.score)
           : [],
         total_count: data.total_count ?? 0,
-        message: data.message ?? ''
+        message: data.message ?? '',
+        source_links: Array.isArray(data.source_links) ? data.source_links : [],
+        insights: data.insights ?? undefined
       };
       setResult(validatedData);
       setProgress({ stage: 'complete', progress: 100, detail: '分析完成！' });
@@ -602,6 +628,98 @@ const App: React.FC = () => {
                 </div>
               </div>
 
+              {/* 市场总结与建议 */}
+              {result.insights && result.insights.summary && (
+                <div className="mb-8 p-6 bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-100">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="p-2 bg-purple-100 rounded-lg">
+                      <Lightbulb className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <h3 className="text-xl font-bold text-slate-800">市场洞察与建议</h3>
+                    {result.insights.market_stage && (
+                      <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-bold">
+                        {result.insights.market_stage}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 市场总结 */}
+                  <div className="mb-6">
+                    <p className="text-slate-700 leading-relaxed">{result.insights.summary}</p>
+                  </div>
+
+                  {/* 必备功能 & 差异化机会 */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    {result.insights.must_have_features && result.insights.must_have_features.length > 0 && (
+                      <div className="p-4 bg-white/60 rounded-lg">
+                        <p className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          必备功能
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {result.insights.must_have_features.map((f, idx) => (
+                            <span key={idx} className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {result.insights.differentiators && result.insights.differentiators.length > 0 && (
+                      <div className="p-4 bg-white/60 rounded-lg">
+                        <p className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4 text-blue-600" />
+                          差异化机会
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {result.insights.differentiators.map((d, idx) => (
+                            <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
+                              {d}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 产品发展建议 */}
+                  {result.insights.recommendations && result.insights.recommendations.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-purple-600" />
+                        产品发展建议
+                      </p>
+                      <div className="space-y-3">
+                        {result.insights.recommendations.map((rec, idx) => (
+                          <div key={idx} className="p-3 bg-white/80 rounded-lg border-l-4 border-purple-400">
+                            <p className="font-bold text-slate-800 text-sm">{typeof rec === 'string' ? rec : rec.title}</p>
+                            {typeof rec !== 'string' && rec.detail && (
+                              <p className="text-slate-600 text-sm mt-1">{rec.detail}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 风险提醒 */}
+                  {result.insights.risks && result.insights.risks.length > 0 && (
+                    <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+                      <p className="text-sm font-bold text-amber-700 mb-2 flex items-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        风险提醒
+                      </p>
+                      <ul className="text-sm text-amber-700 space-y-1">
+                        {result.insights.risks.map((risk, idx) => (
+                          <li key={idx}>• {risk}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center gap-3 mb-6">
                 <List className="w-5 h-5 text-slate-600" />
                 <h3 className="text-xl font-bold text-slate-800">竞品列表</h3>
@@ -668,6 +786,33 @@ const App: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* 参考链接 */}
+              {result.source_links && result.source_links.length > 0 && (
+                <div className="mt-8 p-6 bg-slate-50 rounded-xl border border-slate-100">
+                  <div className="flex items-center gap-3 mb-4">
+                    <Link className="w-5 h-5 text-slate-600" />
+                    <h3 className="text-lg font-bold text-slate-800">参考来源</h3>
+                    <span className="text-sm text-slate-500">({result.source_links.length} 个链接)</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {result.source_links.map((link, idx) => (
+                      <a
+                        key={idx}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-100 transition-colors group"
+                      >
+                        <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-blue-500 flex-shrink-0" />
+                        <span className="text-sm text-slate-600 group-hover:text-blue-600 truncate">
+                          {link.title || link.url}
+                        </span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
